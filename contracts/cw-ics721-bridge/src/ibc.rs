@@ -141,52 +141,11 @@ pub fn ibc_packet_receive(
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn ibc_packet_ack(
-    deps: DepsMut,
+    _deps: DepsMut,
     _env: Env,
-    ack: IbcPacketAckMsg,
+    _ack: IbcPacketAckMsg,
 ) -> Result<IbcBasicResponse, ContractError> {
-    if let Some(error) = try_get_ack_error(&ack.acknowledgement) {
-        handle_packet_fail(deps, ack.original_packet, &error)
-    } else {
-        let msg: NonFungibleTokenPacketData = from_binary(&ack.original_packet.data)?;
-
-        let nft_contract = CLASS_ID_TO_NFT_CONTRACT.load(deps.storage, msg.class_id.clone())?;
-        // Burn all of the tokens being transfered out that were
-        // previously transfered in on this channel.
-        let burn_notices = msg.token_ids.iter().cloned().try_fold(
-            Vec::<WasmMsg>::new(),
-            |mut messages, token| -> StdResult<_> {
-                let key = (msg.class_id.clone(), token.clone());
-                let source_channel =
-                    INCOMING_CLASS_TOKEN_TO_CHANNEL.may_load(deps.storage, key.clone())?;
-                let returning_to_source = source_channel.map_or(false, |source_channel| {
-                    source_channel == ack.original_packet.src.channel_id
-                });
-                if returning_to_source {
-                    // This token's journey is complete, for now.
-                    INCOMING_CLASS_TOKEN_TO_CHANNEL.remove(deps.storage, key);
-                    TOKEN_METADATA.remove(deps.storage, (msg.class_id.clone(), token.clone()));
-
-                    messages.push(WasmMsg::Execute {
-                        contract_addr: nft_contract.to_string(),
-                        msg: to_binary(&cw721::Cw721ExecuteMsg::Burn {
-                            token_id: token.into(),
-                        })?,
-                        funds: vec![],
-                    })
-                }
-                Ok(messages)
-            },
-        )?;
-
-        Ok(IbcBasicResponse::new()
-            .add_messages(burn_notices)
-            .add_attribute("method", "acknowledge")
-            .add_attribute("sender", msg.sender)
-            .add_attribute("receiver", msg.receiver)
-            .add_attribute("classId", msg.class_id)
-            .add_attribute("token_ids", format!("{:?}", msg.token_ids)))
-    }
+    return Ok(IbcBasicResponse::new());
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]

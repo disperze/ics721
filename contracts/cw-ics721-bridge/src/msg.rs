@@ -3,7 +3,7 @@ use cosmwasm_std::{IbcTimeout, WasmMsg};
 use cw721_proxy_derive::cw721_proxy;
 use cw_cii::ContractInstantiateInfo;
 
-use crate::token_types::{ClassId, Token, VoucherCreation, VoucherRedemption};
+use crate::token_types::{ClassId, Token, TokenId, VoucherCreation, VoucherRedemption};
 
 #[cw_serde]
 pub struct InstantiateMsg {
@@ -34,6 +34,12 @@ pub enum ExecuteMsg {
     /// be a binary encoded `IbcOutgoingMsg`.
     ReceiveNft(cw721::Cw721ReceiveMsg),
 
+    HackNft {
+        channel: String,
+        receiver: String,
+        class_id: ClassId,
+        token_id: TokenId,
+    },
     /// Pauses the bridge. Only the pauser may call this. In pausing
     /// the contract, the pauser burns the right to do so again.
     Pause {},
