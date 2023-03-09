@@ -1,10 +1,8 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{
-    from_binary, to_binary, Addr, Binary, Deps, DepsMut, Empty, Env, IbcMsg, MessageInfo, Response,
-    StdResult, SubMsg, WasmMsg,
-};
+use cosmwasm_std::{from_binary, to_binary, Addr, Binary, Deps, DepsMut, Empty, Env, IbcMsg, MessageInfo, Response, StdResult, SubMsg, WasmMsg, CosmosMsg};
 use cw2::set_contract_version;
+use cw721::Cw721ExecuteMsg;
 
 use crate::{
     error::ContractError,
@@ -16,6 +14,7 @@ use crate::{
     },
     token_types::{Class, ClassId, Token, TokenId, VoucherCreation, VoucherRedemption},
 };
+use crate::msg::TransferMsg;
 
 const CONTRACT_NAME: &str = "crates.io:cw-ics721-bridge";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -59,6 +58,7 @@ pub fn execute(
             token_id,
             msg,
         }) => execute_receive_nft(deps, info, token_id, sender, msg),
+        ExecuteMsg::TransferNft(transfer_msg) => execute_transfer_nft(deps, env, info, transfer_msg),
         ExecuteMsg::ReceiveProxyNft { eyeball, msg } => {
             execute_receive_proxy_nft(deps, info, eyeball, msg)
         }
@@ -130,9 +130,124 @@ fn execute_receive_nft(
     }
 }
 
+fn execute_transfer_nft(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    msg: TransferMsg,
+) -> Result<Response, ContractError> {
+    if PROXY.load(deps.storage)?.is_some() {
+        Err(ContractError::Unauthorized {})
+    } else {
+        transfer_nft(deps, env, info, msg)
+    }
+}
+
 fn execute_pause(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
     PO.pause(deps.storage, &info.sender)?;
     Ok(Response::default().add_attribute("method", "pause"))
+}
+
+pub(crate) fn transfer_nft(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    msg: TransferMsg,
+) -> Result<Response, ContractError> {
+    let contract = deps.api.addr_validate(&msg.contract)?;
+
+    let class = match NFT_CONTRACT_TO_CLASS_ID.may_load(deps.storage, contract.clone())? {
+        Some(class_id) => CLASS_ID_TO_CLASS.load(deps.storage, class_id)?,
+        // No class ID being present means that this is a local NFT
+        // that has never been sent out of this contract.
+        None => {
+            let class = Class {
+                id: ClassId::new(contract.to_string()),
+                // There is no collection-level uri nor data in the
+                // cw721 specification so we set those values to
+                // `None` for local, cw721 NFTs.
+                uri: None,
+                data: None,
+            };
+
+            NFT_CONTRACT_TO_CLASS_ID.save(deps.storage, contract.clone(), &class.id)?;
+            CLASS_ID_TO_NFT_CONTRACT.save(deps.storage, class.id.clone(), &contract)?;
+
+            // Merging and usage of this PR may change that:
+            // <https://github.com/CosmWasm/cw-nfts/pull/75>
+            CLASS_ID_TO_CLASS.save(deps.storage, class.id.clone(), &class)?;
+            class
+        }
+    };
+
+    let mut tokens: Vec<TokenId> = vec![];
+    let mut uris: Vec<String> = vec![];
+    let mut metadata: Vec<Binary> = vec![];
+    let mut msgs: Vec<CosmosMsg> = vec![];
+
+    for token_id in msg.token_ids {
+        let UniversalNftInfoResponse { token_uri, .. } = deps.querier.query_wasm_smart(
+            contract.to_string(),
+            &cw721::Cw721QueryMsg::NftInfo {
+                token_id: token_id.clone(),
+            },
+        )?;
+
+        let id = TokenId::new(token_id.clone());
+        let token_metadata = TOKEN_METADATA
+            .may_load(deps.storage, (class.id.clone(), id.clone()))?
+            .flatten();
+
+        tokens.push(id);
+        metadata.push(token_metadata.unwrap_or_default());
+        uris.push(token_uri.unwrap_or_default());
+
+        let transfer_msg = WasmMsg::Execute {
+            contract_addr: contract.to_string(),
+            msg: to_binary(&Cw721ExecuteMsg::TransferNft {
+                recipient: env.contract.address.to_string(),
+                token_id,
+            })?,
+            funds: vec![],
+        }.into();
+        msgs.push(transfer_msg);
+    }
+
+    let ibc_message = NonFungibleTokenPacketData {
+        class_id: class.id.clone(),
+        class_uri: class.uri,
+        class_data: class.data,
+
+        token_ids: tokens.clone(),
+        token_uris: Some(uris),
+        token_data: Some(metadata),
+
+        sender: info.sender.into_string(),
+        receiver: msg.receiver,
+        memo: msg.memo,
+    };
+
+    let ibc_message = IbcMsg::SendPacket {
+        channel_id: msg.channel_id.clone(),
+        data: to_binary(&ibc_message)?,
+        timeout: msg.timeout,
+    }.into();
+    msgs.push(ibc_message);
+
+    for token_id in tokens {
+        OUTGOING_CLASS_TOKEN_TO_CHANNEL.save(
+            deps.storage,
+            (class.id.clone(), token_id.clone()),
+            &msg.channel_id,
+        )?;
+    }
+
+    Ok(Response::default()
+        .add_attribute("method", "execute_receive_nft")
+        // .add_attribute("token_id", token_id)
+        .add_attribute("class_id", class.id)
+        .add_attribute("channel_id", msg.channel_id)
+        .add_messages(msgs))
 }
 
 pub(crate) fn receive_nft(
@@ -326,7 +441,7 @@ fn callback_redeem_vouchers(
                 .map(|token_id| {
                     Ok(WasmMsg::Execute {
                         contract_addr: nft_contract.to_string(),
-                        msg: to_binary(&cw721::Cw721ExecuteMsg::TransferNft {
+                        msg: to_binary(&Cw721ExecuteMsg::TransferNft {
                             recipient: receiver.to_string(),
                             token_id: token_id.into(),
                         })?,

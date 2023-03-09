@@ -34,6 +34,9 @@ pub enum ExecuteMsg {
     /// be a binary encoded `IbcOutgoingMsg`.
     ReceiveNft(cw721::Cw721ReceiveMsg),
 
+    /// Transfer NFTs to remote chain.
+    TransferNft(TransferMsg),
+
     /// Pauses the bridge. Only the pauser may call this. In pausing
     /// the contract, the pauser burns the right to do so again.
     Pause {},
@@ -78,6 +81,16 @@ pub enum CallbackMsg {
     /// to respond with a single ACK when a message calls for the
     /// execution of both `CreateVouchers` and `RedeemVouchers`.
     Conjunction { operands: Vec<WasmMsg> },
+}
+
+#[cw_serde]
+pub struct TransferMsg {
+    pub contract: String,
+    pub token_ids: Vec<String>,
+    pub channel_id: String,
+    pub receiver: String,
+    pub timeout: IbcTimeout,
+    pub memo: Option<String>,
 }
 
 #[cw_serde]
